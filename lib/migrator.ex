@@ -30,12 +30,31 @@ defmodule Cassie.Migrator do
     to_apply =
       path
       |> migrations
-      |> Enum.reject(fn %Migration{applied_at: a} -> is_nil(a) end)
+      |> Enum.filter(fn %Migration{applied_at: a} -> is_nil(a) end)
 
-    case migrations(path) do
+    case to_apply do
       [] -> Logger.info("Already up")
       to_apply  ->
         {time, _} = :timer.tc(Enum, :each, [to_apply, &migrate(&1, :up, opts)])
+        Logger.info("== Migrated in #{inspect(div(time, 10000)/10)}s")
+    end
+  end
+  def run(path, :down, opts) do
+    ensure_migrations_table!
+
+    n = Keyword.get(opts, :n, 1)
+
+    to_apply =
+      path
+      |> migrations
+      |> Enum.filter(fn %Migration{applied_at: a} -> a end)
+      |> Enum.reverse
+      |> Enum.take(n)
+
+    case to_apply do
+      [] -> Logger.info("Already down")
+      to_apply  ->
+        {time, _} = :timer.tc(Enum, :each, [to_apply, &migrate(&1, :down, opts)])
         Logger.info("== Migrated in #{inspect(div(time, 10000)/10)}s")
     end
   end
@@ -100,14 +119,14 @@ defmodule Cassie.Migrator do
   defp migrate(%Migration{filename: filename, authored_at: authored_at, description: description, up: up}, :up, opts) do
     Logger.info("== Running #{filename}")
     execute_statements(up, opts)
-    query = "INSERT INTO cassie_migrator.migrations (authored_at, description, applied_at) VALUES (?, ?, ?)"
+    query = "INSERT INTO cassie_migrator.migrations (authored_at, description, applied_at) VALUES (?, ?, ?);"
     values = [authored_at: authored_at, description: description, applied_at: System.system_time(:milli_seconds)]
     execute(query, values)
   end
   defp migrate(%Migration{filename: filename, authored_at: authored_at, description: description, down: down}, :down, opts) do
     Logger.info("== Running #{filename} backwards")
     execute_statements(down, opts)
-    query = "DELETE FROM cassie_migrator.migrations WHERE authored_at = ?, description = ?"
+    query = "DELETE FROM cassie_migrator.migrations WHERE authored_at = ? AND description = ?;"
     values = [authored_at: authored_at, description: description]
     execute(query, values)
   end

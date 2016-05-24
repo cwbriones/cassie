@@ -68,7 +68,7 @@ defmodule Cassie.Parser do
     %Migration{params|up: current <> line <> "\n"}
   end
   def add_line(params, :down, line) do
-    current = params.up || ""
+    current = params.down || ""
     %Migration{params|down: current <> line <> "\n"}
   end
 end
