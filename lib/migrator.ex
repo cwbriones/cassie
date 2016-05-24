@@ -7,12 +7,11 @@ defmodule Cassie.Migrator do
 
   defmodule CassandraError do
     defexception [
-        query: "",
         error_message: nil,
         error_code: nil
       ]
 
-    def message(%__MODULE__{query: query, error_message: message, error_code: code}) do
+    def message(%__MODULE__{error_message: message, error_code: code}) do
       "Error Code #{code}: #{message}"
     end
   end
@@ -116,12 +115,18 @@ defmodule Cassie.Migrator do
   defp migrate(%Migration{filename: filename, down: nil}, :down, _opts) do
     raise MigrationError, message: "Rollback is not supported for migration: #{filename}"
   end
-  defp migrate(%Migration{filename: filename, authored_at: authored_at, description: description, up: up}, :up, opts) do
+  defp migrate(mig = %Migration{filename: filename, authored_at: authored_at, description: description, up: up}, :up, opts) do
     Logger.info("== Running #{filename}")
     execute_statements(up, opts)
     query = "INSERT INTO cassie_migrator.migrations (authored_at, description, applied_at) VALUES (?, ?, ?);"
     values = [authored_at: authored_at, description: description, applied_at: System.system_time(:milli_seconds)]
     execute(query, values)
+  rescue
+    e in [Cassie.Migrator.CassandraError] ->
+      Logger.error(Exception.message(e))
+      migrate(mig, :down, opts)
+      Logger.info("There was an error while trying to migrate #{filename}")
+      exit(:shutdown)
   end
   defp migrate(%Migration{filename: filename, authored_at: authored_at, description: description, down: down}, :down, opts) do
     Logger.info("== Running #{filename} backwards")
@@ -161,8 +166,11 @@ defmodule Cassie.Migrator do
     end
     case :cqerl.run_query(c, query) do
       {:ok, _} -> :ok
+      # These are the error codes for Already Exists and
+      # Unconfigured Keyspace/Table, respectively
       {:error, {9216, _, _}} -> :ok
-      {:error, {code, msg, _}} -> raise CassandraError, query: query, error_message: msg, error_code: code
+      {:error, {8704, _, _}} -> :ok
+      {:error, {code, msg, _}} -> raise CassandraError, error_message: msg, error_code: code
     end
   end
 end
