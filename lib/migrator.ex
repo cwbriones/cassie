@@ -7,9 +7,14 @@ defmodule Cassie.Migrator do
 
   defmodule CassandraError do
     defexception [
-        message: nil,
+        query: "",
+        error_message: nil,
         error_code: nil
       ]
+
+    def message(%__MODULE__{query: query, error_message: message, error_code: code}) do
+      "Error Code #{code}: #{message}"
+    end
   end
 
   alias Cassie.Migration
@@ -21,22 +26,15 @@ defmodule Cassie.Migrator do
 
   def run(path, :up, opts) do
     ensure_migrations_table!
-    migrations_read =
-      path
-      |> migrations_available
-      |> Enum.map(fn mig = %Migration{authored_at: a, description: d} -> {{d, a}, mig} end)
-      |> Enum.into(%{})
 
     to_apply =
-      migrations
-      |> Enum.map(fn %Migration{authored_at: a, description: d} -> {d, a} end)
-      |> :maps.without(migrations_read)
-      |> :maps.values
-      |> Enum.sort(fn %Migration{authored_at: a}, %Migration{authored_at: b} -> a < b end)
+      path
+      |> migrations
+      |> Enum.reject(fn %Migration{applied_at: a} -> is_nil(a) end)
 
-    case to_apply do
+    case migrations(path) do
       [] -> Logger.info("Already up")
-      _  ->
+      to_apply  ->
         {time, _} = :timer.tc(Enum, :each, [to_apply, &migrate(&1, :up, opts)])
         Logger.info("== Migrated in #{inspect(div(time, 10000)/10)}s")
     end
@@ -58,15 +56,23 @@ defmodule Cassie.Migrator do
     execute_idempotent(create_table)
   end
 
-  def migrations do
-    "SELECT * FROM cassie_migrator.migrations;"
-    |> execute
-    |> Enum.map(fn mig ->
-      defaults = Map.delete(%Migration{}, :__struct__)
-      mig
-      |> Enum.into(defaults)
-      |> Map.put(:__struct__, Migration)
+  def migrations(path) do
+    all =
+      path
+      |> migrations_available
+      |> Enum.map(fn mig = %Migration{authored_at: a, description: d} -> {{d, a}, mig} end)
+      |> Enum.into(%{})
+
+    applied =
+      migrations_applied
+      |> Enum.map(fn mig = %Migration{authored_at: a, description: d} -> {{d, a}, mig} end)
+      |> Enum.into(%{})
+    all
+    |> Map.merge(applied, fn _k, from_file, %Migration{applied_at: a}  ->
+      %Migration{from_file|applied_at: a}
     end)
+    |> Map.values
+    |> Enum.sort(fn %Migration{authored_at: a}, %Migration{authored_at: b} -> a < b end)
   end
 
   def migrations_available(path) do
@@ -74,6 +80,17 @@ defmodule Cassie.Migrator do
     |> File.ls!
     |> Enum.map(fn file ->
       Path.join(path, file) |> Cassie.Parser.parse_migration
+    end)
+  end
+
+  def migrations_applied do
+    "SELECT * FROM cassie_migrator.migrations;"
+    |> execute
+    |> Enum.map(fn mig ->
+      defaults = Map.delete(%Migration{}, :__struct__)
+      mig
+      |> Enum.into(defaults)
+      |> Map.put(:__struct__, Migration)
     end)
   end
 
@@ -108,7 +125,8 @@ defmodule Cassie.Migrator do
     case :cqerl.run_query(c, query) do
       {:ok, :void} -> :ok
       {:ok, result} -> :cqerl.all_rows(result)
-      {:error, {code, msg, _}} -> raise CassandraError, message: msg, error_code: code
+      {:error, {8704, _, _}} -> []
+      {:error, {code, msg, _}} -> raise CassandraError, query: statement, error_message: msg, error_code: code
     end
   end
 
@@ -125,7 +143,7 @@ defmodule Cassie.Migrator do
     case :cqerl.run_query(c, query) do
       {:ok, _} -> :ok
       {:error, {9216, _, _}} -> :ok
-      {:error, {code, msg, _}} -> raise CassandraError, message: msg, error_code: code
+      {:error, {code, msg, _}} -> raise CassandraError, query: query, error_message: msg, error_code: code
     end
   end
 end
