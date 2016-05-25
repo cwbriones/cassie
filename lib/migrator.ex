@@ -166,10 +166,14 @@ defmodule Cassie.Migrator do
     end
     case :cqerl.run_query(c, query) do
       {:ok, _} -> :ok
-      # These are the error codes for Already Exists and
-      # Unconfigured Keyspace/Table, respectively
+      # Cannot add existing keyspace/table
       {:error, {9216, _, _}} -> :ok
-      {:error, {8704, _, _}} -> :ok
+      # Cannot drop keyspace
+      {:error, {8960, _, _}} -> :ok
+      # Cannot drop table
+      # We match on the message because the code is also used for
+      # Error: No keyspace specified
+      {:error, {8704, "unconfigured table" <> _, _}} -> :ok
       {:error, {code, msg, _}} -> raise CassandraError, error_message: msg, error_code: code
     end
   end
